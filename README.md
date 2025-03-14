@@ -13,6 +13,23 @@ A lightweight, flexible performance tracking library for Python applications. Ea
 - ✅ **Support for async functions** - Works with asyncio
 - ✅ **Metadata support** - Add context to your timing events
 
+## Example output
+
+```bash
+===== ✨ Tim The Enchanter Performance Report ✨ ingest_docs_de2a5e7e-70c1-4f9b-861c-d9a431e3cb24_20250314_094609 =====
+Format: aggregate
+
+Process Name                             |  Count   |  Total (s)   |   Avg (s)    |   Min (s)    |   Max (s)    |  Median (s)  |  StdDev (s)
+-----------------------------------------------------------------------------------------------------------------------------------------------
+get_context_docs                         |    1     |     8.510816 |     8.510816 |     8.510816 |     8.510816 |     8.510816 |     0.000000
+summarize_chunk                          |    2     |     2.506251 |     1.253125 |     0.879834 |     1.626417 |     1.253125 |     0.527914
+process_all_documents                    |    1     |     2.379968 |     2.379968 |     2.379968 |     2.379968 |     2.379968 |     0.000000
+db_add_document                          |    2     |     2.231350 |     1.115675 |     0.747726 |     1.483624 |     1.115675 |     0.520359
+split_document                           |    1     |     0.000170 |     0.000170 |     0.000170 |     0.000170 |     0.000170 |     0.000000
+
+================================================================================
+```
+
 ## Installation
 
 ```bash
