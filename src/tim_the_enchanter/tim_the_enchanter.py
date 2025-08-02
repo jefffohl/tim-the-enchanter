@@ -1,13 +1,13 @@
 import time
 import statistics
+import uuid
 from collections import defaultdict
 from contextlib import contextmanager
 from dataclasses import dataclass
 from datetime import datetime
 from enum import Enum
-from typing import Dict, List, Optional, Union, Any, Callable
+from typing import Dict, List, Optional, Union
 
-import asyncio
 from functools import wraps
 
 
@@ -30,26 +30,38 @@ class TimTheEnchanterTimingEvent:
 
 
 class TimTheEnchanter:
-    """Performance tracking service for measuring execution times."""
+    """Performance tracking service for measuring execution times.
+    
+    This class is designed to be request-scoped, with each instance managing
+    its own sessions independently. This eliminates concurrency issues and
+    provides better isolation between different requests or operations.
+    """
 
-    _instance = None
-    _initialized = False
+    def __init__(self, enabled: bool = True):
+        """Initialize a new performance tracker instance.
+        
+        Args:
+            enabled: Whether performance tracking should be enabled by default
+        """
+        self._sessions: Dict[str, List[TimTheEnchanterTimingEvent]] = {}
+        self._enabled = enabled
 
-    def __new__(cls):
-        """Singleton pattern to ensure only one tracker exists."""
-        if cls._instance is None:
-            cls._instance = super(TimTheEnchanter, cls).__new__(cls)
-            cls._instance._sessions = {}
-            cls._instance._active_session = None
-            # Default to disabled for safety
-            cls._instance._enabled = False
-            cls._instance._initialized = False
-        return cls._instance
+    @classmethod
+    def create(cls, enabled: bool = True) -> "TimTheEnchanter":
+        """Factory method to create a new performance tracker instance.
 
-    def __init__(self):
-        """Initialize the performance tracker if not already initialized."""
-        if not self._initialized:
-            self._initialized = True
+        This is the recommended way to create a tracker instance.
+
+        Args:
+            enabled: Whether performance tracking should be enabled
+
+        Returns:
+            New TimTheEnchanter instance
+
+        Example:
+            tracker = TimTheEnchanter.create(enabled=True)
+        """
+        return cls(enabled=enabled)
 
     def configure(
         self, enabled: Optional[bool] = None, reset_sessions: bool = False
@@ -73,28 +85,8 @@ class TimTheEnchanter:
 
         if reset_sessions:
             self._sessions = {}
-            self._active_session = None
 
         return self
-
-    @classmethod
-    def create(cls, enabled: bool = True) -> "TimTheEnchanter":
-        """Factory method to create/get and configure the performance tracker.
-
-        This is the recommended way to get a configured tracker instance.
-
-        Args:
-            enabled: Whether performance tracking should be enabled
-
-        Returns:
-            Configured TimTheEnchanter instance
-
-        Example:
-            tracker = TimTheEnchanter.create(enabled=True)
-        """
-        instance = cls()
-        instance.configure(enabled=enabled)
-        return instance
 
     @property
     def enabled(self) -> bool:
@@ -114,11 +106,39 @@ class TimTheEnchanter:
         """Disable performance tracking."""
         self._enabled = False
 
-    def start_session(self, session_name: str) -> "TimTheEnchanter":
+    def start_session(self, session_name: Optional[str] = None) -> str:
         """Start a new recording session.
 
         Args:
-            session_name: A unique name for the session
+            session_name: Optional name for the session. If None, generates a unique ID.
+
+        Returns:
+            The session ID (either the provided name or generated unique ID).
+
+        Example:
+            session_id = tracker.start_session("api_request")
+            # or
+            session_id = tracker.start_session()  # Auto-generates unique ID
+        """
+        if not self._enabled:
+            return ""  # Return empty string when disabled
+
+        if session_name is None:
+            session_id = str(uuid.uuid4())
+        else:
+            session_id = session_name
+
+        if session_id in self._sessions:
+            raise ValueError(f"Session '{session_id}' already exists")
+
+        self._sessions[session_id] = []
+        return session_id
+
+    def end_session(self, session_id: str) -> "TimTheEnchanter":
+        """End a recording session.
+
+        Args:
+            session_id: The ID of the session to end.
 
         Returns:
             The performance tracker instance (self) for method chaining.
@@ -126,33 +146,21 @@ class TimTheEnchanter:
         if not self._enabled:
             return self  # No-op when disabled, but still return self for chaining
 
-        if session_name in self._sessions:
-            raise ValueError(f"Session '{session_name}' already exists")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
-        self._sessions[session_name] = []
-        self._active_session = session_name
-
-        return self
-
-    def end_session(self) -> "TimTheEnchanter":
-        """End the current recording session.
-
-        Returns:
-            The performance tracker instance (self) for method chaining.
-        """
-        if not self._enabled:
-            return self  # No-op when disabled, but still return self for chaining
-
-        self._active_session = None
+        # Optionally remove the session data when ending
+        # del self._sessions[session_id]  # Uncomment if you want to auto-cleanup
 
         return self
 
     def record(
-        self, process_name: str, duration: float, metadata: Optional[Dict] = None
+        self, session_id: str, process_name: str, duration: float, metadata: Optional[Dict] = None
     ) -> "TimTheEnchanter":
-        """Record a timing event for a process.
+        """Record a timing event for a process in a specific session.
 
         Args:
+            session_id: The ID of the session to record in
             process_name: Name of the process being timed
             duration: Duration of the process in seconds
             metadata: Optional metadata for the event
@@ -163,8 +171,8 @@ class TimTheEnchanter:
         if not self._enabled:
             return self  # No-op when disabled, but still return self for chaining
 
-        if not self._active_session:
-            raise RuntimeError("No active session. Call start_session() first.")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
         event = TimTheEnchanterTimingEvent(
             process_name=process_name,
@@ -173,20 +181,21 @@ class TimTheEnchanter:
             metadata=metadata,
         )
 
-        self._sessions[self._active_session].append(event)
+        self._sessions[session_id].append(event)
 
         return self
 
     @contextmanager
-    def time_process(self, process_name: str, metadata: Optional[Dict] = None):
-        """Context manager for timing a process.
+    def time_process(self, session_id: str, process_name: str, metadata: Optional[Dict] = None):
+        """Context manager for timing a process in a specific session.
 
         Args:
+            session_id: The ID of the session to record in
             process_name: Name of the process being timed
             metadata: Optional metadata for the event
 
         Example:
-            with tim_the_enchanter.time_process("database_query"):
+            with tracker.time_process(session_id, "database_query"):
                 result = db.query()
         """
         if not self._enabled:
@@ -199,16 +208,17 @@ class TimTheEnchanter:
             yield
         finally:
             duration = time.time() - start_time
-            self.record(process_name, duration, metadata)
+            self.record(session_id, process_name, duration, metadata)
 
-    def time_function(self, process_name: Optional[str] = None):
-        """Decorator for timing a function.
+    def time_function(self, session_id: str, process_name: Optional[str] = None):
+        """Decorator for timing a function in a specific session.
 
         Args:
+            session_id: The ID of the session to record in
             process_name: Optional name override. If None, uses function name
 
         Example:
-            @tim_the_enchanter.time_function()
+            @tracker.time_function(session_id)
             def my_function():
                 pass
         """
@@ -221,21 +231,22 @@ class TimTheEnchanter:
                     return func(*args, **kwargs)
 
                 name = process_name or func.__name__
-                with self.time_process(name):
+                with self.time_process(session_id, name):
                     return func(*args, **kwargs)
 
             return wrapped
 
         return decorator
 
-    def time_async_function(self, process_name: Optional[str] = None):
-        """Decorator for timing an async function.
+    def time_async_function(self, session_id: str, process_name: Optional[str] = None):
+        """Decorator for timing an async function in a specific session.
 
         Args:
+            session_id: The ID of the session to record in
             process_name: Optional name override. If None, uses function name
 
         Example:
-            @tim_the_enchanter.time_async_function()
+            @tracker.time_async_function(session_id)
             async def my_async_function():
                 pass
         """
@@ -253,19 +264,17 @@ class TimTheEnchanter:
                     return await func(*args, **kwargs)
                 finally:
                     duration = time.time() - start_time
-                    self.record(name, duration)
+                    self.record(session_id, name, duration)
 
             return wrapped
 
         return decorator
 
-    def get_session_events(
-        self, session_name: Optional[str] = None
-    ) -> List[TimTheEnchanterTimingEvent]:
+    def get_session_events(self, session_id: str) -> List[TimTheEnchanterTimingEvent]:
         """Get all events for a session.
 
         Args:
-            session_name: Name of the session. If None, uses active session.
+            session_id: ID of the session.
 
         Returns:
             List of TimTheEnchanterTimingEvent objects for the session
@@ -273,28 +282,24 @@ class TimTheEnchanter:
         if not self._enabled:
             return []  # Return empty list when disabled
 
-        session = session_name or self._active_session
-        if not session:
-            raise RuntimeError("No active session and no session name provided.")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
-        if session not in self._sessions:
-            raise ValueError(f"Session '{session}' does not exist")
-
-        return self._sessions[session]
+        return self._sessions[session_id]
 
     def report(
         self,
+        session_id: str,
         format: Union[
             TimTheEnchanterReportFormat, str
         ] = TimTheEnchanterReportFormat.CHRONOLOGICAL,
-        session_name: Optional[str] = None,
         include_metadata: bool = False,
     ) -> Dict:
         """Generate a report for the specified session.
 
         Args:
+            session_id: ID of the session to report on
             format: Report format (chronological, by_process, or aggregate)
-            session_name: Name of the session. If None, uses active session.
             include_metadata: Whether to include metadata in the report
 
         Returns:
@@ -303,19 +308,15 @@ class TimTheEnchanter:
         if not self._enabled:
             return {
                 "format": "disabled",
-                "session": session_name or self._active_session or "unknown",
+                "session": session_id,
                 "events": [],
                 "message": "Performance tracking is disabled",
             }
 
-        session = session_name or self._active_session
-        if not session:
-            raise RuntimeError("No active session and no session name provided.")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
-        if session not in self._sessions:
-            raise ValueError(f"Session '{session}' does not exist")
-
-        events = self._sessions[session]
+        events = self._sessions[session_id]
 
         if isinstance(format, str):
             try:
@@ -331,7 +332,7 @@ class TimTheEnchanter:
             sorted_events = sorted(events, key=lambda e: e.timestamp)
             result = {
                 "format": "chronological",
-                "session": session,
+                "session": session_id,
                 "events": [
                     self._event_to_dict(e, include_metadata) for e in sorted_events
                 ],
@@ -348,7 +349,7 @@ class TimTheEnchanter:
 
             result = {
                 "format": "by_process",
-                "session": session,
+                "session": session_id,
                 "processes": {
                     process: [
                         self._event_to_dict(e, include_metadata) for e in process_events
@@ -377,7 +378,7 @@ class TimTheEnchanter:
 
             result = {
                 "format": "aggregate",
-                "session": session,
+                "session": session_id,
                 "aggregates": aggregates,
             }
 
@@ -385,17 +386,17 @@ class TimTheEnchanter:
 
     def print_report(
         self,
+        session_id: str,
         format: Union[
             TimTheEnchanterReportFormat, str
         ] = TimTheEnchanterReportFormat.CHRONOLOGICAL,
-        session_name: Optional[str] = None,
         include_metadata: bool = False,
     ) -> "TimTheEnchanter":
         """Print a formatted report to the console as a table.
 
         Args:
+            session_id: ID of the session to report on
             format: Report format (chronological, by_process, or aggregate)
-            session_name: Name of the session. If None, uses active session.
             include_metadata: Whether to include metadata in the report
 
         Returns:
@@ -406,7 +407,7 @@ class TimTheEnchanter:
             # When disabled, print nothing and just return
             return self
 
-        report_data = self.report(format, session_name, include_metadata)
+        report_data = self.report(session_id, format, include_metadata)
 
         print(
             f"\n===== ✨ Tim The Enchanter Performance Report ✨ {report_data['session']} ====="
@@ -543,11 +544,11 @@ class TimTheEnchanter:
         print("\n" + "=" * 80 + "\n")
         return self
 
-    def reset_session(self, session_name: Optional[str] = None) -> "TimTheEnchanter":
+    def reset_session(self, session_id: str) -> "TimTheEnchanter":
         """Reset a session, clearing all recorded events.
 
         Args:
-            session_name: Name of the session. If None, uses active session.
+            session_id: ID of the session to reset.
 
         Returns:
             The performance tracker instance (self) for method chaining.
@@ -555,21 +556,17 @@ class TimTheEnchanter:
         if not self._enabled:
             return self  # No-op when disabled, but still return self for chaining
 
-        session = session_name or self._active_session
-        if not session:
-            raise RuntimeError("No active session and no session name provided.")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
-        if session not in self._sessions:
-            raise ValueError(f"Session '{session}' does not exist")
-
-        self._sessions[session] = []
+        self._sessions[session_id] = []
         return self
 
-    def delete_session(self, session_name: str) -> "TimTheEnchanter":
+    def delete_session(self, session_id: str) -> "TimTheEnchanter":
         """Delete a session.
 
         Args:
-            session_name: Name of the session to delete.
+            session_id: ID of the session to delete.
 
         Returns:
             The performance tracker instance (self) for method chaining.
@@ -577,14 +574,19 @@ class TimTheEnchanter:
         if not self._enabled:
             return self  # No-op when disabled, but still return self for chaining
 
-        if session_name not in self._sessions:
-            raise ValueError(f"Session '{session_name}' does not exist")
+        if session_id not in self._sessions:
+            raise ValueError(f"Session '{session_id}' does not exist")
 
-        if self._active_session == session_name:
-            self._active_session = None
-
-        del self._sessions[session_name]
+        del self._sessions[session_id]
         return self
+
+    def list_sessions(self) -> List[str]:
+        """Get a list of all active session IDs.
+
+        Returns:
+            List of session IDs.
+        """
+        return list(self._sessions.keys())
 
     def _event_to_dict(
         self, event: TimTheEnchanterTimingEvent, include_metadata: bool = False
@@ -610,37 +612,29 @@ class TimTheEnchanter:
         return result
 
 
-# Create singleton instance for direct import
-tim_the_enchanter = TimTheEnchanter()
-
-
 # Example usage:
 """
-# Get a configured instance via the factory method (recommended)
-tracker = TimTheEnchanter.create(enabled=True)  # or enabled=False to disable
+# Create a new tracker instance (request-scoped)
+tracker = TimTheEnchanter.create(enabled=True)
 
-# Method 1: Configure an existing instance
-tracker = TimTheEnchanter().configure(enabled=True)
-
-# Method 2: Use the factory method (recommended approach)
-tracker = TimTheEnchanter.create(enabled=not is_production)
-
-# Start tracking a session
-tracker.start_session("my_api_request")
+# Start a session and get the session ID
+session_id = tracker.start_session("api_request")
+# or auto-generate a unique ID:
+# session_id = tracker.start_session()
 
 # Track a block of code with a context manager
-with tracker.time_process("data_processing"):
+with tracker.time_process(session_id, "data_processing"):
     # Your code here
     process_data()
 
 # Track a function with a decorator
-@tracker.time_function()
+@tracker.time_function(session_id)
 def calculate_results():
     # Function code
     pass
 
 # Track an async function
-@tracker.time_async_function()
+@tracker.time_async_function(session_id)
 async def fetch_data():
     # Async function code
     pass
@@ -649,16 +643,14 @@ async def fetch_data():
 start_time = time.time()
 # ... do something ...
 duration = time.time() - start_time
-tracker.record("manual_operation", duration)
+tracker.record(session_id, "manual_operation", duration)
 
 # Method chaining with fluent interface
-(TimTheEnchanter()
-    .configure(enabled=True)
-    .start_session("api_request")
-    .record("initialization", 0.05)
-    .print_report(TimTheEnchanterReportFormat.CHRONOLOGICAL)
-    .end_session()
-)
+tracker = TimTheEnchanter().configure(enabled=True)
+session_id = tracker.start_session("api_request")
+tracker.record(session_id, "initialization", 0.05)
+tracker.print_report(session_id, TimTheEnchanterReportFormat.CHRONOLOGICAL)
+tracker.end_session(session_id)
 
 # Runtime enabling/disabling
 tracker.disable()  # Temporarily disable tracking
@@ -666,10 +658,16 @@ expensive_operation()  # Not tracked
 tracker.enable()   # Re-enable tracking
 
 # Generate reports
-tracker.print_report(TimTheEnchanterReportFormat.CHRONOLOGICAL)  # Time-ordered events
-tracker.print_report(TimTheEnchanterReportFormat.BY_PROCESS)     # Grouped by process name
-tracker.print_report(TimTheEnchanterReportFormat.AGGREGATE)      # Statistical summary
+tracker.print_report(session_id, TimTheEnchanterReportFormat.CHRONOLOGICAL)  # Time-ordered events
+tracker.print_report(session_id, TimTheEnchanterReportFormat.BY_PROCESS)     # Grouped by process name
+tracker.print_report(session_id, TimTheEnchanterReportFormat.AGGREGATE)      # Statistical summary
 
 # End the session
-tracker.end_session()
+tracker.end_session(session_id)
+
+# List all sessions
+active_sessions = tracker.list_sessions()
+
+# Clean up when done
+tracker.delete_session(session_id)
 """
